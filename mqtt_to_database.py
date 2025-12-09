@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-mqtt_to_database.py V2
+mqtt_to_database.py V3
 Lee datos de Adafruit IO (MQTT) y los guarda en PostgreSQL (Railway)
-✨ INCLUYE: Auto-migración de BD, nivel de confort y estadísticas
+✨ MEJORAS: Maneja "ANOMALIA" en lugar de NULL/None
 """
 
 import os
@@ -62,6 +62,9 @@ BUFFER_TIMEOUT = 60
 reconnect_count = 0
 max_reconnects = 5
 reading_counter = 0
+
+# Marcador para valores anómalos
+ANOMALIA = "ANOMALIA"
 
 # ==================== BASE DE DATOS ====================
 
@@ -268,7 +271,10 @@ def init_database():
         return False
 
 def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado, comfort_level=None, reading_number=None):
-    """Guardar lectura de sensores en BD"""
+    """
+    Guardar lectura de sensores en BD
+    ✨ Convierte "ANOMALIA" a NULL en la base de datos
+    """
     try:
         conn = get_db_connection()
         if not conn:
@@ -276,16 +282,22 @@ def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado, com
         
         cursor = conn.cursor()
         
-        # Convertir "N/A" a None
-        if temperature == "N/A" or temperature is None:
+        # ✨ Convertir "ANOMALIA" a None (NULL en BD)
+        if temperature == ANOMALIA or temperature == "N/A" or temperature is None:
             temperature = None
         else:
-            temperature = float(temperature)
+            try:
+                temperature = float(temperature)
+            except:
+                temperature = None
             
-        if humidity == "N/A" or humidity is None:
+        if humidity == ANOMALIA or humidity == "N/A" or humidity is None:
             humidity = None
         else:
-            humidity = float(humidity)
+            try:
+                humidity = float(humidity)
+            except:
+                humidity = None
         
         cursor.execute('''
             INSERT INTO sensor_readings 
@@ -299,9 +311,13 @@ def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado, com
         cursor.close()
         conn.close()
         
+        # ✨ Mostrar "ANOMALIA" en el log si el valor es None
+        temp_display = f"{temperature}°C" if temperature is not None else ANOMALIA
+        hum_display = f"{humidity}%" if humidity is not None else ANOMALIA
         comfort_str = f" [{comfort_level}]" if comfort_level else ""
+        
         print(f"✅ Lectura #{reading_number or '?'} guardada (ID:{record_id}) - "
-              f"T:{temperature}°C H:{humidity}% LDR:{ldr_percent}% {estado}{comfort_str}")
+              f"T:{temp_display} H:{hum_display} LDR:{ldr_percent}% {estado}{comfort_str}")
         return True
         
     except Exception as e:
@@ -407,7 +423,7 @@ def on_connect(client, userdata, flags, rc):
             client.subscribe(topic)
             print(f"   📡 Suscrito a: {feed_name}")
         
-        save_event("MQTT_BRIDGE", "Conectado a Adafruit IO - V2 con auto-migración")
+        save_event("MQTT_BRIDGE", "Conectado a Adafruit IO - V3 con manejo de anomalías")
         
     else:
         error_messages = {
@@ -445,10 +461,24 @@ def on_message(client, userdata, msg):
         print(f"📥 MQTT → {feed_name}: {value}")
         
         if feed_name == FEEDS['temperature']:
-            data_buffer['temperature'] = float(value) if value != "N/A" else None
+            # ✨ Mantener "ANOMALIA" como string
+            if value == ANOMALIA or value == "N/A":
+                data_buffer['temperature'] = ANOMALIA
+            else:
+                try:
+                    data_buffer['temperature'] = float(value)
+                except:
+                    data_buffer['temperature'] = ANOMALIA
             
         elif feed_name == FEEDS['humidity']:
-            data_buffer['humidity'] = float(value) if value != "N/A" else None
+            # ✨ Mantener "ANOMALIA" como string
+            if value == ANOMALIA or value == "N/A":
+                data_buffer['humidity'] = ANOMALIA
+            else:
+                try:
+                    data_buffer['humidity'] = float(value)
+                except:
+                    data_buffer['humidity'] = ANOMALIA
             
         elif feed_name == FEEDS['ldr_percent']:
             data_buffer['ldr_percent'] = float(value)
@@ -568,7 +598,10 @@ def print_dashboard():
         for r in recent:
             ts = r['timestamp'].strftime("%H:%M:%S")
             comfort = r['comfort_level'] or 'N/A'
-            print(f"  {ts} - T:{r['temperature']}°C H:{r['humidity']}% "
+            # ✨ Mostrar ANOMALIA si es NULL
+            temp_str = f"{r['temperature']}°C" if r['temperature'] is not None else ANOMALIA
+            hum_str = f"{r['humidity']}%" if r['humidity'] is not None else ANOMALIA
+            print(f"  {ts} - T:{temp_str} H:{hum_str} "
                   f"LDR:{r['ldr_percent']}% {r['estado']} [{comfort}]")
         
         cursor.execute('''
@@ -585,6 +618,20 @@ def print_dashboard():
             for c in comfort_dist:
                 print(f"  {c['comfort_level']}: {c['count']} lecturas")
         
+        # ✨ Estadísticas de anomalías
+        cursor.execute('''
+            SELECT 
+                COUNT(*) FILTER (WHERE temperature IS NULL) as temp_anomalias,
+                COUNT(*) FILTER (WHERE humidity IS NULL) as hum_anomalias
+            FROM sensor_readings
+        ''')
+        anomalias = cursor.fetchone()
+        
+        if anomalias['temp_anomalias'] > 0 or anomalias['hum_anomalias'] > 0:
+            print(f"\n⚠️  Anomalías detectadas:")
+            print(f"  • Temperatura: {anomalias['temp_anomalias']} lecturas")
+            print(f"  • Humedad: {anomalias['hum_anomalias']} lecturas")
+        
         cursor.close()
         conn.close()
         
@@ -597,8 +644,8 @@ def print_dashboard():
 
 def main():
     print("\n" + "="*60)
-    print("   🚀 MQTT to PostgreSQL Bridge V2")
-    print("   Con auto-migración y soporte para confort")
+    print("   🚀 MQTT to PostgreSQL Bridge V3")
+    print("   Con manejo inteligente de anomalías")
     print("="*60)
     print(f"\n📍 Usuario Adafruit: {ADAFRUIT_USERNAME}")
     print(f"📍 Database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'configurada'}")
@@ -611,7 +658,7 @@ def main():
     
     # Configurar cliente MQTT
     print("\n[2] Configurando cliente MQTT...")
-    client = mqtt.Client(client_id=f"bridge_v2_{int(time.time())}")
+    client = mqtt.Client(client_id=f"bridge_v3_{int(time.time())}")
     client.username_pw_set(ADAFRUIT_USERNAME, ADAFRUIT_KEY)
     
     client.on_connect = on_connect
@@ -630,7 +677,7 @@ def main():
     
     client.loop_start()
     
-    print("\n✅ Bridge V2 activo - presiona Ctrl+C para detener\n")
+    print("\n✅ Bridge V3 activo - presiona Ctrl+C para detener\n")
     print("📊 Monitoreando feeds:")
     for key, feed in FEEDS.items():
         print(f"   • {key:15} → {feed}")
@@ -658,7 +705,7 @@ def main():
         
         print_dashboard()
         
-        save_event("MQTT_BRIDGE", "Bridge V2 detenido")
+        save_event("MQTT_BRIDGE", "Bridge V3 detenido")
         client.loop_stop()
         client.disconnect()
         
