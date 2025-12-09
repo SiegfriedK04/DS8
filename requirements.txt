@@ -1,4 +1,14 @@
-Flask==3.0.0
-Flask-CORS==4.0.0
-psycopg2-binary==2.9.10
-gunicorn==21.2.0
+# requirements.txt
+# Para Railway - Incluye Bridge MQTT + API Flask (opcional)
+
+# ==================== Bridge MQTT → PostgreSQL ====================
+paho-mqtt==1.6.1        # Cliente MQTT para Adafruit IO
+psycopg2-binary==2.9.10 # PostgreSQL (ya lo tenías)
+
+# ==================== API Flask (Opcional - si quieres mantener API REST) ====================
+Flask==3.0.0            # Ya lo tenías
+Flask-CORS==4.0.0       # Ya lo tenías
+gunicorn==21.2.0        # Ya lo tenías
+
+# ==================== Utilidades (Opcional) ====================
+python-dotenv==1.0.0    # Para cargar .env localmente
