@@ -21,6 +21,50 @@ def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL)
     return conn
 
+def init_database():
+    """Crear tablas si no existen"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sensor_readings (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                temperature REAL,
+                humidity REAL,
+                ldr_percent REAL NOT NULL,
+                ldr_raw INTEGER NOT NULL,
+                estado VARCHAR(20) NOT NULL
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS events (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                event_type VARCHAR(50) NOT NULL,
+                description TEXT NOT NULL
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS commands (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                command VARCHAR(50) NOT NULL,
+                value VARCHAR(50) NOT NULL,
+                source VARCHAR(20) DEFAULT 'unknown'
+            )
+        ''')
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("✓ Tablas inicializadas correctamente")
+    except Exception as e:
+        print(f"Error inicializando BD: {e}")
+
 # ==================== ENDPOINTS ====================
 
 @app.route('/', methods=['GET'])
@@ -310,7 +354,9 @@ def get_stats():
 # ==================== INICIALIZACIÓN ====================
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    # Para producción con gunicorn, no usar app.run()
-    # Gunicorn se encargará de servir la app
+    # Inicializar tablas al arrancar
+    init_database()
+    
+    port = int(os.environ.get('PORT', 5000))
+    # IMPORTANTE: HTTP (no HTTPS) para compatibilidad con Wokwi
     app.run(host='0.0.0.0', port=port, debug=False)
