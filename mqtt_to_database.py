@@ -32,7 +32,14 @@ FEEDS = {
 }
 
 # PostgreSQL (Railway, Supabase, etc.)
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://user:pass@localhost/iot_db')
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+# 🔧 FIX 1: Validar DATABASE_URL al inicio
+if not DATABASE_URL:
+    print("❌ ERROR: DATABASE_URL no está configurada")
+    print("Configura la variable de entorno DATABASE_URL")
+    print("Ejemplo: export DATABASE_URL='postgresql://user:pass@host:port/db'")
+    exit(1)
 
 # Buffer para acumular datos antes de guardar
 data_buffer = {
@@ -46,6 +53,10 @@ data_buffer = {
 
 # Timeout para guardar datos incompletos (segundos)
 BUFFER_TIMEOUT = 60
+
+# 🔧 FIX 2: Contador de reconexiones
+reconnect_count = 0
+max_reconnects = 5
 
 # ==================== BASE DE DATOS ====================
 
@@ -124,8 +135,13 @@ def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado):
         # Convertir "N/A" a None
         if temperature == "N/A" or temperature is None:
             temperature = None
+        else:
+            temperature = float(temperature)
+            
         if humidity == "N/A" or humidity is None:
             humidity = None
+        else:
+            humidity = float(humidity)
         
         cursor.execute('''
             INSERT INTO sensor_readings 
@@ -177,8 +193,11 @@ def save_event(event_type, description):
 
 def on_connect(client, userdata, flags, rc):
     """Callback cuando se conecta al broker MQTT"""
+    global reconnect_count
+    
     if rc == 0:
         print("✅ Conectado a Adafruit IO")
+        reconnect_count = 0  # Reset contador
         
         # Suscribirse a todos los feeds
         for feed_name in FEEDS.values():
@@ -190,12 +209,36 @@ def on_connect(client, userdata, flags, rc):
         save_event("MQTT_BRIDGE", "Conectado a Adafruit IO")
         
     else:
-        print(f"❌ Error conectando: {rc}")
+        error_messages = {
+            1: "Protocolo incorrecto",
+            2: "Cliente rechazado",
+            3: "Servidor no disponible",
+            4: "Usuario/contraseña incorrectos",
+            5: "No autorizado"
+        }
+        error = error_messages.get(rc, f"Error desconocido ({rc})")
+        print(f"❌ Error conectando: {error}")
+        
+        # 🔧 FIX 3: Intentar reconectar
+        reconnect_count += 1
+        if reconnect_count < max_reconnects:
+            print(f"⚠️  Reintentando conexión ({reconnect_count}/{max_reconnects})...")
+            time.sleep(5)
+        else:
+            print(f"❌ Máximo de intentos alcanzado. Verifica credenciales.")
+            save_event("MQTT_ERROR", f"Fallo de autenticación después de {max_reconnects} intentos")
 
 def on_disconnect(client, userdata, rc):
     """Callback cuando se desconecta del broker"""
-    print(f"⚠️  Desconectado de Adafruit IO (rc: {rc})")
-    save_event("MQTT_BRIDGE", f"Desconectado (código: {rc})")
+    if rc != 0:
+        print(f"⚠️  Desconectado inesperadamente (rc: {rc})")
+        save_event("MQTT_BRIDGE", f"Desconexión inesperada (código: {rc})")
+        
+        # Intentar reconectar automáticamente
+        print("⚠️  Intentando reconectar en 10 segundos...")
+        time.sleep(10)
+    else:
+        print(f"✅ Desconectado correctamente")
 
 def on_message(client, userdata, msg):
     """Callback cuando se recibe un mensaje MQTT"""
@@ -305,6 +348,8 @@ def main():
     print("\n" + "="*60)
     print("   MQTT to PostgreSQL Bridge - Adafruit IO → Railway")
     print("="*60)
+    print(f"\n📍 Usuario Adafruit: {ADAFRUIT_USERNAME}")
+    print(f"📍 Database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'configurada'}")
     
     # Inicializar base de datos
     print("\n[1] Inicializando base de datos...")
@@ -322,12 +367,16 @@ def main():
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     
+    # 🔧 FIX 4: Habilitar reconexión automática
+    client.reconnect_delay_set(min_delay=1, max_delay=120)
+    
     # Conectar al broker
     print(f"\n[3] Conectando a {ADAFRUIT_HOST}:{ADAFRUIT_PORT}...")
     try:
         client.connect(ADAFRUIT_HOST, ADAFRUIT_PORT, 60)
     except Exception as e:
         print(f"❌ Error conectando: {e}")
+        save_event("MQTT_ERROR", f"Error de conexión inicial: {str(e)}")
         return
     
     # Iniciar loop en background
