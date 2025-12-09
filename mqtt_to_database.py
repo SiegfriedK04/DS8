@@ -15,11 +15,23 @@ import paho.mqtt.client as mqtt
 
 # ==================== CONFIGURACIÓN ====================
 
-# Adafruit IO
-ADAFRUIT_USERNAME = os.environ.get('ADAFRUIT_USERNAME', '_Sieg_')
-ADAFRUIT_KEY = os.environ.get('ADAFRUIT_KEY', 'aio_ShOa42GKcCyGtQPvxuEcOWKXxjzk')
+# Adafruit IO - USAR SOLO VARIABLES DE ENTORNO
+# ⚠️ NUNCA pongas las keys directamente aquí
+ADAFRUIT_USERNAME = os.environ.get('ADAFRUIT_USERNAME')
+ADAFRUIT_KEY = os.environ.get('ADAFRUIT_KEY')
 ADAFRUIT_HOST = "io.adafruit.com"
 ADAFRUIT_PORT = 1883
+
+# Validar que las credenciales estén configuradas
+if not ADAFRUIT_USERNAME or not ADAFRUIT_KEY:
+    print("❌ ERROR: Credenciales de Adafruit IO no configuradas")
+    print("\nConfigura las variables de entorno:")
+    print("  export ADAFRUIT_USERNAME='tu_usuario'")
+    print("  export ADAFRUIT_KEY='aio_XXXXXXXXXXXX'")
+    print("\nO en Railway → Variables:")
+    print("  ADAFRUIT_USERNAME = tu_usuario")
+    print("  ADAFRUIT_KEY = aio_XXXXXXXXXXXX")
+    exit(1)
 
 # Feeds a escuchar
 FEEDS = {
@@ -34,7 +46,7 @@ FEEDS = {
 # PostgreSQL (Railway, Supabase, etc.)
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
-# 🔧 FIX 1: Validar DATABASE_URL al inicio
+# Validar DATABASE_URL
 if not DATABASE_URL:
     print("❌ ERROR: DATABASE_URL no está configurada")
     print("Configura la variable de entorno DATABASE_URL")
@@ -54,7 +66,7 @@ data_buffer = {
 # Timeout para guardar datos incompletos (segundos)
 BUFFER_TIMEOUT = 60
 
-# 🔧 FIX 2: Contador de reconexiones
+# Contador de reconexiones
 reconnect_count = 0
 max_reconnects = 5
 
@@ -214,12 +226,12 @@ def on_connect(client, userdata, flags, rc):
             2: "Cliente rechazado",
             3: "Servidor no disponible",
             4: "Usuario/contraseña incorrectos",
-            5: "No autorizado"
+            5: "No autorizado - Key inválida o revocada"
         }
         error = error_messages.get(rc, f"Error desconocido ({rc})")
         print(f"❌ Error conectando: {error}")
         
-        # 🔧 FIX 3: Intentar reconectar
+        # Intentar reconectar
         reconnect_count += 1
         if reconnect_count < max_reconnects:
             print(f"⚠️  Reintentando conexión ({reconnect_count}/{max_reconnects})...")
@@ -367,7 +379,7 @@ def main():
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     
-    # 🔧 FIX 4: Habilitar reconexión automática
+    # Habilitar reconexión automática
     client.reconnect_delay_set(min_delay=1, max_delay=120)
     
     # Conectar al broker
