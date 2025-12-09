@@ -829,5 +829,87 @@ def main():
     # Configurar reconexión automática
     client.reconnect_delay_set(min_delay=1, max_delay=120)
     
-    ### CONEXIÓN INICIAL ###
-    print(f"\n[3] Conectan
+    # Conectar
+    print(f"\n[3] Conectando a {ADAFRUIT_HOST}:{ADAFRUIT_PORT}...")
+    try:
+        client.connect(ADAFRUIT_HOST, ADAFRUIT_PORT, 60)
+    except Exception as e:
+        print(f"❌ Error conectando: {e}")
+        return
+    
+    # Loop infinito
+    print("\n[4] Iniciando loop de mensajes MQTT...")
+    print("="*60)
+    print("\n⏳ Esperando datos de Wokwi...\n")
+    
+    last_dashboard = time.time()
+    
+    try:
+        # Iniciar loop en segundo plano
+        client.loop_start()
+        
+        while True:
+            time.sleep(1)
+            
+            # Dashboard cada 5 minutos
+            if time.time() - last_dashboard > 300:
+                print_dashboard()
+                last_dashboard = time.time()
+                
+    except KeyboardInterrupt:
+        print("\n\n⏹️  Detenido por usuario")
+        client.loop_stop()
+        client.disconnect()
+        save_event("MQTT_BRIDGE", "Bridge detenido por usuario")
+        print("✅ Desconectado limpiamente")
+
+def print_dashboard():
+    """Dashboard de estadísticas"""
+    print("\n" + "="*60)
+    print(" 📊 DASHBOARD")
+    print("="*60)
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return
+        
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Total de lecturas
+        cursor.execute("SELECT COUNT(*) as total FROM sensor_readings")
+        total = cursor.fetchone()['total']
+        print(f"\n📈 Total de lecturas: {total}")
+        
+        # Últimas 5 lecturas
+        cursor.execute('''
+            SELECT timestamp, temperature, humidity, ldr_percent, 
+                   estado, comfort_level
+            FROM sensor_readings
+            ORDER BY timestamp DESC
+            LIMIT 5
+        ''')
+        recent = cursor.fetchall()
+        
+        if recent:
+            print("\n🕐 Últimas 5 lecturas:")
+            for r in recent:
+                ts = r['timestamp'].strftime("%H:%M:%S")
+                comfort = r['comfort_level'] or 'N/A'
+                temp_str = f"{r['temperature']}°C" if r['temperature'] is not None else ANOMALIA
+                hum_str = f"{r['humidity']}%" if r['humidity'] is not None else ANOMALIA
+                print(f"  {ts} - T:{temp_str} H:{hum_str} "
+                      f"LDR:{r['ldr_percent']}% {r['estado']} [{comfort}]")
+        
+        cursor.close()
+        conn.close()
+        
+    except Exception as e:
+        print(f"❌ Error generando dashboard: {e}")
+    
+    print("="*60 + "\n")
+
+# ==================== ENTRY POINT ====================
+
+if __name__ == "__main__":
+    main()
