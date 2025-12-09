@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 mqtt_to_database.py V3
-Lee datos de Adafruit IO (MQTT) y los guarda en PostgreSQL (Railway)
-✨ MEJORAS: Maneja "ANOMALIA" en lugar de NULL/None
+Bridge MQTT → PostgreSQL para sistema IoT
+Lee datos de Adafruit IO y los almacena en Railway
+✨ Maneja "ANOMALIA" en lugar de NULL/None para tracking
 """
 
 import os
@@ -15,12 +16,14 @@ import paho.mqtt.client as mqtt
 
 # ==================== CONFIGURACIÓN ====================
 
-# Adafruit IO - USAR SOLO VARIABLES DE ENTORNO
+### CREDENCIALES ADAFRUIT IO ###
+# Usa SOLO variables de entorno por seguridad
 ADAFRUIT_USERNAME = os.environ.get('ADAFRUIT_USERNAME')
 ADAFRUIT_KEY = os.environ.get('ADAFRUIT_KEY')
 ADAFRUIT_HOST = "io.adafruit.com"
 ADAFRUIT_PORT = 1883
 
+# Validación de credenciales
 if not ADAFRUIT_USERNAME or not ADAFRUIT_KEY:
     print("❌ ERROR: Credenciales de Adafruit IO no configuradas")
     print("\nConfigura las variables de entorno:")
@@ -28,26 +31,28 @@ if not ADAFRUIT_USERNAME or not ADAFRUIT_KEY:
     print("  export ADAFRUIT_KEY='aio_XXXXXXXXXXXX'")
     exit(1)
 
-# Feeds a escuchar
+### FEEDS MQTT - MAPEO DE CANALES ###
+# key: nombre interno → value: nombre del feed en Adafruit IO
 FEEDS = {
-    'temperature': 'sensor_temp',
-    'humidity': 'sensor_hum',
-    'ldr_percent': 'sensor_ldr_pct',
-    'ldr_raw': 'sensor_ldr_raw',
-    'estado': 'sensor_estado',
-    'comfort': 'sensor_comfort',
-    'stats': 'sensor_stats',
-    'system_event': 'system_event'
+    'temperature': 'sensor_temp',      # Temperatura (°C o "ANOMALIA")
+    'humidity': 'sensor_hum',          # Humedad (% o "ANOMALIA")
+    'ldr_percent': 'sensor_ldr_pct',   # Luminosidad (%)
+    'ldr_raw': 'sensor_ldr_raw',       # Valor ADC raw
+    'estado': 'sensor_estado',         # Timestamp/hora
+    'comfort': 'sensor_comfort',       # Nivel de confort térmico
+    'stats': 'sensor_stats',           # Estadísticas agregadas
+    'system_event': 'system_event'     # Eventos del sistema
 }
 
-# PostgreSQL
+### POSTGRESQL (RAILWAY) ###
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 if not DATABASE_URL:
     print("❌ ERROR: DATABASE_URL no está configurada")
     exit(1)
 
-# Buffer para acumular datos
+### BUFFER DE DATOS ###
+# Acumula datos hasta recibir todos los campos necesarios
 data_buffer = {
     'temperature': None,
     'humidity': None,
@@ -58,18 +63,25 @@ data_buffer = {
     'last_update': None
 }
 
-BUFFER_TIMEOUT = 60
+### CONFIGURACIÓN DE RECONEXIÓN ###
+BUFFER_TIMEOUT = 60     # Segundos antes de guardar datos parciales
 reconnect_count = 0
 max_reconnects = 5
-reading_counter = 0
+reading_counter = 0     # Contador global de lecturas
 
-# Marcador para valores anómalos
-ANOMALIA = "ANOMALIA"
+### MARCADOR DE ANOMALÍAS ###
+ANOMALIA = "ANOMALIA"   # String especial para valores inválidos
 
 # ==================== BASE DE DATOS ====================
 
 def get_db_connection():
-    """Crear conexión a PostgreSQL"""
+    """
+    Crea conexión a PostgreSQL en Railway
+    
+    Returns:
+        connection: Objeto de conexión psycopg2
+        None: Si falla la conexión
+    """
     try:
         conn = psycopg2.connect(DATABASE_URL)
         return conn
@@ -79,8 +91,21 @@ def get_db_connection():
 
 def run_migration():
     """
-    🚀 AUTO-MIGRACIÓN: Ejecuta la migración V2 automáticamente
-    Agrega las columnas nuevas si no existen
+    🚀 AUTO-MIGRACIÓN: Actualiza esquema de BD automáticamente
+    
+    Agrega columnas nuevas si no existen:
+    - comfort_level: Nivel de confort térmico
+    - reading_number: Número secuencial de lectura
+    - statistics: Tabla de estadísticas agregadas
+    
+    Proceso:
+        1. Verifica columnas existentes
+        2. Agrega columnas faltantes
+        3. Crea índices para optimización
+        4. Rellena reading_number para datos antiguos
+    
+    Returns:
+        bool: True si migración exitosa
     """
     print("\n🔧 Ejecutando auto-migración de base de datos...")
     
@@ -92,7 +117,7 @@ def run_migration():
         
         cursor = conn.cursor()
         
-        # ============ PASO 1: Verificar columnas existentes ============
+        ### PASO 1: Verificar columnas existentes ###
         cursor.execute("""
             SELECT column_name 
             FROM information_schema.columns 
@@ -103,7 +128,7 @@ def run_migration():
         
         migrations_applied = []
         
-        # ============ PASO 2: Agregar comfort_level ============
+        ### PASO 2: Agregar comfort_level ###
         if 'comfort_level' not in existing_columns:
             print("   ⚙️  Agregando columna 'comfort_level'...")
             cursor.execute("""
@@ -114,7 +139,7 @@ def run_migration():
         else:
             print("   ✓ Columna 'comfort_level' ya existe")
         
-        # ============ PASO 3: Agregar reading_number ============
+        ### PASO 3: Agregar reading_number ###
         if 'reading_number' not in existing_columns:
             print("   ⚙️  Agregando columna 'reading_number'...")
             cursor.execute("""
@@ -125,7 +150,7 @@ def run_migration():
         else:
             print("   ✓ Columna 'reading_number' ya existe")
         
-        # ============ PASO 4: Crear tabla statistics ============
+        ### PASO 4: Crear tabla statistics ###
         print("   ⚙️  Verificando tabla 'statistics'...")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS statistics (
@@ -144,7 +169,7 @@ def run_migration():
             )
         """)
         
-        # ============ PASO 5: Crear índices ============
+        ### PASO 5: Crear índices para optimización ###
         print("   ⚙️  Creando índices...")
         
         cursor.execute("""
@@ -162,7 +187,7 @@ def run_migration():
             ON statistics(timestamp DESC)
         """)
         
-        # ============ PASO 6: Rellenar reading_number para datos existentes ============
+        ### PASO 6: Rellenar reading_number para datos existentes ###
         if 'reading_number' in migrations_applied:
             print("   ⚙️  Asignando números de lectura a datos existentes...")
             cursor.execute("""
@@ -180,7 +205,7 @@ def run_migration():
             if updated_rows > 0:
                 print(f"   ✓ {updated_rows} lecturas numeradas")
         
-        # ============ CONFIRMAR CAMBIOS ============
+        ### CONFIRMAR CAMBIOS ###
         conn.commit()
         
         if migrations_applied:
@@ -188,7 +213,7 @@ def run_migration():
         else:
             print("\n✅ Base de datos ya está actualizada")
         
-        # ============ VERIFICACIÓN FINAL ============
+        ### VERIFICACIÓN FINAL ###
         cursor.execute("SELECT COUNT(*) FROM sensor_readings")
         sensor_count = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM events")
@@ -213,7 +238,17 @@ def run_migration():
         return False
 
 def init_database():
-    """Crear tablas iniciales + ejecutar migraciones"""
+    """
+    Inicializa estructura base de datos + ejecuta migraciones
+    
+    Tablas creadas:
+        1. sensor_readings: Lecturas de sensores
+        2. events: Eventos del sistema
+        3. statistics: Estadísticas agregadas (vía migración)
+    
+    Returns:
+        bool: True si inicialización exitosa
+    """
     try:
         conn = get_db_connection()
         if not conn:
@@ -221,22 +256,22 @@ def init_database():
         
         cursor = conn.cursor()
         
-        # ============ TABLAS BASE ============
-        
-        # Tabla de lecturas de sensores
+        ### TABLA: sensor_readings ###
+        # Almacena todas las lecturas de sensores
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS sensor_readings (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                temperature REAL,
-                humidity REAL,
-                ldr_percent REAL NOT NULL,
-                ldr_raw INTEGER NOT NULL,
-                estado VARCHAR(20) NOT NULL
+                temperature REAL,              -- NULL si ANOMALIA
+                humidity REAL,                 -- NULL si ANOMALIA
+                ldr_percent REAL NOT NULL,     -- Siempre válido
+                ldr_raw INTEGER NOT NULL,      -- Siempre válido
+                estado VARCHAR(20) NOT NULL    -- Timestamp del dispositivo
             )
         ''')
         
-        # Tabla de eventos del sistema
+        ### TABLA: events ###
+        # Registra eventos del sistema (conexiones, errores, etc.)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS events (
                 id SERIAL PRIMARY KEY,
@@ -246,7 +281,7 @@ def init_database():
             )
         ''')
         
-        # Índices base
+        ### ÍNDICES BASE ###
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_sensor_timestamp 
             ON sensor_readings(timestamp DESC)
@@ -263,7 +298,7 @@ def init_database():
         
         print("✅ Tablas base inicializadas")
         
-        # ============ EJECUTAR MIGRACIONES ============
+        ### EJECUTAR MIGRACIONES ###
         return run_migration()
         
     except Exception as e:
@@ -272,8 +307,24 @@ def init_database():
 
 def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado, comfort_level=None, reading_number=None):
     """
-    Guardar lectura de sensores en BD
-    ✨ Convierte "ANOMALIA" a NULL en la base de datos
+    Guarda una lectura de sensores en PostgreSQL
+    
+    Args:
+        temperature: Temperatura en °C, "ANOMALIA", o None
+        humidity: Humedad en %, "ANOMALIA", o None
+        ldr_percent (float): Luminosidad en % (siempre válido)
+        ldr_raw (int): Valor ADC raw (siempre válido)
+        estado (str): Timestamp del dispositivo
+        comfort_level (str, opcional): Nivel de confort térmico
+        reading_number (int, opcional): Número secuencial de lectura
+    
+    Manejo de anomalías:
+        - "ANOMALIA" → Se convierte a NULL en BD
+        - Permite queries SQL estándar sobre valores válidos
+        - Mantiene registro de cuántas lecturas fallaron
+    
+    Returns:
+        bool: True si guardado exitoso
     """
     try:
         conn = get_db_connection()
@@ -282,7 +333,7 @@ def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado, com
         
         cursor = conn.cursor()
         
-        # ✨ Convertir "ANOMALIA" a None (NULL en BD)
+        ### CONVERSIÓN DE ANOMALÍAS A NULL ###
         if temperature == ANOMALIA or temperature == "N/A" or temperature is None:
             temperature = None
         else:
@@ -299,6 +350,7 @@ def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado, com
             except:
                 humidity = None
         
+        ### INSERCIÓN EN BD ###
         cursor.execute('''
             INSERT INTO sensor_readings 
             (temperature, humidity, ldr_percent, ldr_raw, estado, comfort_level, reading_number)
@@ -311,7 +363,7 @@ def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado, com
         cursor.close()
         conn.close()
         
-        # ✨ Mostrar "ANOMALIA" en el log si el valor es None
+        ### LOG CON FORMATO LEGIBLE ###
         temp_display = f"{temperature}°C" if temperature is not None else ANOMALIA
         hum_display = f"{humidity}%" if humidity is not None else ANOMALIA
         comfort_str = f" [{comfort_level}]" if comfort_level else ""
@@ -325,7 +377,19 @@ def save_sensor_reading(temperature, humidity, ldr_percent, ldr_raw, estado, com
         return False
 
 def save_statistics(stats_data):
-    """Guardar estadísticas agregadas"""
+    """
+    Guarda estadísticas agregadas en BD
+    
+    Args:
+        stats_data (str): String formato "T:25.3(18.5-32.1) H:65.2(45.0-85.0) L:55.8(10.2-95.3)"
+    
+    Parseo:
+        - Extrae promedio, mínimo y máximo de cada métrica
+        - T: Temperatura, H: Humedad, L: Luminosidad (LDR)
+    
+    Returns:
+        bool: True si guardado exitoso
+    """
     try:
         conn = get_db_connection()
         if not conn:
@@ -333,7 +397,7 @@ def save_statistics(stats_data):
         
         cursor = conn.cursor()
         
-        # Parsear: "T:25.3(18.5-32.1) H:65.2(45.0-85.0) L:55.8(10.2-95.3)"
+        ### PARSEO DEL STRING DE ESTADÍSTICAS ###
         parts = stats_data.split()
         
         temp_data = None
@@ -349,7 +413,7 @@ def save_statistics(stats_data):
                 ldr_data = part[2:]
         
         def parse_stat(data_str):
-            """Parsea '25.3(18.5-32.1)' -> (25.3, 18.5, 32.1)"""
+            """Parsea '25.3(18.5-32.1)' → (25.3, 18.5, 32.1)"""
             if not data_str or '(' not in data_str:
                 return None, None, None
             avg_str, range_str = data_str.split('(')
@@ -360,6 +424,7 @@ def save_statistics(stats_data):
         hum_avg, hum_min, hum_max = parse_stat(hum_data)
         ldr_avg, ldr_min, ldr_max = parse_stat(ldr_data)
         
+        ### INSERCIÓN EN BD ###
         cursor.execute('''
             INSERT INTO statistics 
             (temp_avg, temp_min, temp_max, hum_avg, hum_min, hum_max, 
@@ -382,7 +447,22 @@ def save_statistics(stats_data):
         return False
 
 def save_event(event_type, description):
-    """Guardar evento del sistema en BD"""
+    """
+    Guarda un evento del sistema en BD
+    
+    Args:
+        event_type (str): Tipo de evento (MQTT_BRIDGE, SYSTEM, ERROR, LED, etc.)
+        description (str): Descripción del evento
+    
+    Casos de uso:
+        - Conexiones/desconexiones MQTT
+        - Errores del sistema
+        - Acciones de actuadores
+        - Cambios de configuración
+    
+    Returns:
+        bool: True si guardado exitoso
+    """
     try:
         conn = get_db_connection()
         if not conn:
@@ -411,13 +491,26 @@ def save_event(event_type, description):
 # ==================== MQTT CALLBACKS ====================
 
 def on_connect(client, userdata, flags, rc):
-    """Callback cuando se conecta al broker MQTT"""
+    """
+    Callback ejecutado al conectar con Adafruit IO
+    
+    Args:
+        rc (int): Código de resultado de conexión
+            0: Conexión exitosa
+            1-5: Varios tipos de error
+    
+    Acciones:
+        1. Suscribe a todos los feeds configurados
+        2. Registra evento de conexión en BD
+        3. Maneja reintentos si falla
+    """
     global reconnect_count
     
     if rc == 0:
         print("✅ Conectado a Adafruit IO")
         reconnect_count = 0
         
+        # Suscribirse a todos los feeds
         for feed_name in FEEDS.values():
             topic = f"{ADAFRUIT_USERNAME}/feeds/{feed_name}"
             client.subscribe(topic)
@@ -426,6 +519,7 @@ def on_connect(client, userdata, flags, rc):
         save_event("MQTT_BRIDGE", "Conectado a Adafruit IO - V3 con manejo de anomalías")
         
     else:
+        # Mapeo de códigos de error
         error_messages = {
             1: "Protocolo incorrecto",
             2: "Cliente rechazado",
@@ -436,13 +530,21 @@ def on_connect(client, userdata, flags, rc):
         error = error_messages.get(rc, f"Error desconocido ({rc})")
         print(f"❌ Error conectando: {error}")
         
+        # Reintentos automáticos
         reconnect_count += 1
         if reconnect_count < max_reconnects:
             print(f"⚠️  Reintentando conexión ({reconnect_count}/{max_reconnects})...")
             time.sleep(5)
 
 def on_disconnect(client, userdata, rc):
-    """Callback cuando se desconecta del broker"""
+    """
+    Callback ejecutado al desconectar de Adafruit IO
+    
+    Args:
+        rc (int): Código de resultado
+            0: Desconexión intencional
+            ≠0: Desconexión inesperada
+    """
     if rc != 0:
         print(f"⚠️  Desconectado inesperadamente (rc: {rc})")
         save_event("MQTT_BRIDGE", f"Desconexión inesperada (código: {rc})")
@@ -451,7 +553,18 @@ def on_disconnect(client, userdata, rc):
         print(f"✅ Desconectado correctamente")
 
 def on_message(client, userdata, msg):
-    """Callback cuando se recibe un mensaje MQTT"""
+    """
+    Callback ejecutado al recibir mensaje MQTT
+    
+    Proceso:
+        1. Parsea el feed y valor recibido
+        2. Acumula datos en buffer
+        3. Al recibir 'estado' (timestamp), activa flush a BD
+        4. Maneja feeds especiales (stats, events)
+    
+    Args:
+        msg: Objeto mensaje MQTT con topic y payload
+    """
     global data_buffer, reading_counter
     
     try:
@@ -460,8 +573,8 @@ def on_message(client, userdata, msg):
         
         print(f"📥 MQTT → {feed_name}: {value}")
         
+        ### TEMPERATURA ###
         if feed_name == FEEDS['temperature']:
-            # ✨ Mantener "ANOMALIA" como string
             if value == ANOMALIA or value == "N/A":
                 data_buffer['temperature'] = ANOMALIA
             else:
@@ -470,8 +583,8 @@ def on_message(client, userdata, msg):
                 except:
                     data_buffer['temperature'] = ANOMALIA
             
+        ### HUMEDAD ###
         elif feed_name == FEEDS['humidity']:
-            # ✨ Mantener "ANOMALIA" como string
             if value == ANOMALIA or value == "N/A":
                 data_buffer['humidity'] = ANOMALIA
             else:
@@ -480,24 +593,30 @@ def on_message(client, userdata, msg):
                 except:
                     data_buffer['humidity'] = ANOMALIA
             
+        ### LUMINOSIDAD (PORCENTAJE) ###
         elif feed_name == FEEDS['ldr_percent']:
             data_buffer['ldr_percent'] = float(value)
             
+        ### LUMINOSIDAD (RAW) ###
         elif feed_name == FEEDS['ldr_raw']:
             data_buffer['ldr_raw'] = int(value)
             
+        ### CONFORT TÉRMICO ###
         elif feed_name == FEEDS['comfort']:
             data_buffer['comfort'] = value
             
+        ### TIMESTAMP (TRIGGER DE GUARDADO) ###
         elif feed_name == FEEDS['estado']:
             data_buffer['estado'] = value
             data_buffer['last_update'] = time.time()
             reading_counter += 1
-            flush_buffer_to_db()
+            flush_buffer_to_db()  # Guardar conjunto completo
             
+        ### ESTADÍSTICAS ###
         elif feed_name == FEEDS['stats']:
             save_statistics(value)
             
+        ### EVENTOS DEL SISTEMA ###
         elif feed_name == FEEDS['system_event']:
             if ':' in value:
                 event_type, description = value.split(':', 1)
@@ -509,9 +628,19 @@ def on_message(client, userdata, msg):
         print(f"❌ Error procesando mensaje: {e}")
 
 def flush_buffer_to_db():
-    """Guardar buffer acumulado en la base de datos"""
+    """
+    Guarda el buffer acumulado en la base de datos
+    
+    Condiciones:
+        - Requiere al menos: ldr_percent, ldr_raw, estado
+        - temperatura y humidity pueden ser ANOMALIA
+    
+    Después de guardar:
+        - Limpia el buffer para nueva lectura
+    """
     global data_buffer, reading_counter
     
+    # Verificar que tenemos datos mínimos necesarios
     if (data_buffer['ldr_percent'] is not None and 
         data_buffer['ldr_raw'] is not None and 
         data_buffer['estado'] is not None):
@@ -526,6 +655,7 @@ def flush_buffer_to_db():
             reading_counter
         )
         
+        # Limpiar buffer después de guardado exitoso
         if success:
             data_buffer = {
                 'temperature': None,
@@ -538,7 +668,15 @@ def flush_buffer_to_db():
             }
 
 def check_buffer_timeout():
-    """Verificar timeout del buffer"""
+    """
+    Verifica si el buffer ha excedido el timeout
+    
+    Si pasan más de BUFFER_TIMEOUT segundos sin completar una lectura:
+        - Guarda datos parciales disponibles
+        - Limpia el buffer para evitar bloqueos
+    
+    Previene pérdida de datos en caso de feeds incompletos
+    """
     global data_buffer
     
     if data_buffer['last_update'] is not None:
@@ -547,6 +685,7 @@ def check_buffer_timeout():
         if elapsed > BUFFER_TIMEOUT:
             print(f"⚠️  Buffer timeout ({elapsed:.1f}s) - guardando datos parciales")
             
+            # Guardar con valores por defecto para campos faltantes
             if data_buffer['ldr_percent'] is not None:
                 save_sensor_reading(
                     data_buffer['temperature'],
@@ -558,6 +697,7 @@ def check_buffer_timeout():
                     reading_counter
                 )
                 
+                # Limpiar buffer
                 data_buffer = {
                     'temperature': None,
                     'humidity': None,
@@ -569,7 +709,15 @@ def check_buffer_timeout():
                 }
 
 def print_dashboard():
-    """Imprimir dashboard con estadísticas"""
+    """
+    Imprime dashboard con estadísticas de la BD
+    
+    Muestra:
+        - Total de lecturas guardadas
+        - Últimas 5 lecturas
+        - Distribución de confort térmico
+        - Conteo de anomalías detectadas
+    """
     print("\n" + "="*60)
     print(" 📊 DASHBOARD - Últimas Estadísticas")
     print("="*60)
@@ -581,10 +729,12 @@ def print_dashboard():
         
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
+        ### TOTAL DE LECTURAS ###
         cursor.execute("SELECT COUNT(*) as total FROM sensor_readings")
         total = cursor.fetchone()['total']
         print(f"\n📈 Total de lecturas: {total}")
         
+        ### ÚLTIMAS 5 LECTURAS ###
         cursor.execute('''
             SELECT timestamp, temperature, humidity, ldr_percent, 
                    estado, comfort_level
@@ -598,12 +748,12 @@ def print_dashboard():
         for r in recent:
             ts = r['timestamp'].strftime("%H:%M:%S")
             comfort = r['comfort_level'] or 'N/A'
-            # ✨ Mostrar ANOMALIA si es NULL
             temp_str = f"{r['temperature']}°C" if r['temperature'] is not None else ANOMALIA
             hum_str = f"{r['humidity']}%" if r['humidity'] is not None else ANOMALIA
             print(f"  {ts} - T:{temp_str} H:{hum_str} "
                   f"LDR:{r['ldr_percent']}% {r['estado']} [{comfort}]")
         
+        ### DISTRIBUCIÓN DE CONFORT ###
         cursor.execute('''
             SELECT comfort_level, COUNT(*) as count
             FROM sensor_readings
@@ -618,7 +768,7 @@ def print_dashboard():
             for c in comfort_dist:
                 print(f"  {c['comfort_level']}: {c['count']} lecturas")
         
-        # ✨ Estadísticas de anomalías
+        ### ESTADÍSTICAS DE ANOMALÍAS ###
         cursor.execute('''
             SELECT 
                 COUNT(*) FILTER (WHERE temperature IS NULL) as temp_anomalias,
@@ -643,6 +793,16 @@ def print_dashboard():
 # ==================== MAIN ====================
 
 def main():
+    """
+    Función principal del bridge MQTT → PostgreSQL
+    
+    Flujo:
+        1. Validar variables de entorno
+        2. Inicializar BD (con auto-migración)
+        3. Conectar a Adafruit IO
+        4. Loop infinito escuchando mensajes MQTT
+        5. Dashboard periódico cada 5 minutos
+    """
     print("\n" + "="*60)
     print("   🚀 MQTT to PostgreSQL Bridge V3")
     print("   Con manejo inteligente de anomalías")
@@ -650,66 +810,24 @@ def main():
     print(f"\n📍 Usuario Adafruit: {ADAFRUIT_USERNAME}")
     print(f"📍 Database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'configurada'}")
     
-    # Inicializar base de datos (incluye migración automática)
+    ### INICIALIZACIÓN DE BD ###
     print("\n[1] Inicializando base de datos con auto-migración...")
     if not init_database():
         print("❌ No se pudo inicializar la BD")
         return
     
-    # Configurar cliente MQTT
+    ### CONFIGURACIÓN CLIENTE MQTT ###
     print("\n[2] Configurando cliente MQTT...")
     client = mqtt.Client(client_id=f"bridge_v3_{int(time.time())}")
     client.username_pw_set(ADAFRUIT_USERNAME, ADAFRUIT_KEY)
     
+    # Asignar callbacks
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     
+    # Configurar reconexión automática
     client.reconnect_delay_set(min_delay=1, max_delay=120)
     
-    # Conectar
-    print(f"\n[3] Conectando a {ADAFRUIT_HOST}:{ADAFRUIT_PORT}...")
-    try:
-        client.connect(ADAFRUIT_HOST, ADAFRUIT_PORT, 60)
-    except Exception as e:
-        print(f"❌ Error conectando: {e}")
-        return
-    
-    client.loop_start()
-    
-    print("\n✅ Bridge V3 activo - presiona Ctrl+C para detener\n")
-    print("📊 Monitoreando feeds:")
-    for key, feed in FEEDS.items():
-        print(f"   • {key:15} → {feed}")
-    print()
-    
-    # Loop principal con dashboard periódico
-    dashboard_interval = 300  # 5 minutos
-    last_dashboard = time.time()
-    
-    try:
-        while True:
-            time.sleep(10)
-            check_buffer_timeout()
-            
-            if time.time() - last_dashboard > dashboard_interval:
-                print_dashboard()
-                last_dashboard = time.time()
-            
-    except KeyboardInterrupt:
-        print("\n\n[Sistema] Detenido por usuario")
-        
-        if data_buffer['ldr_percent'] is not None:
-            print("💾 Guardando datos pendientes...")
-            flush_buffer_to_db()
-        
-        print_dashboard()
-        
-        save_event("MQTT_BRIDGE", "Bridge V3 detenido")
-        client.loop_stop()
-        client.disconnect()
-        
-        print("✅ Bridge finalizado correctamente")
-
-if __name__ == "__main__":
-    main()
+    ### CONEXIÓN INICIAL ###
+    print(f"\n[3] Conectan
