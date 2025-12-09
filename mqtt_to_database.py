@@ -17,7 +17,7 @@ import paho.mqtt.client as mqtt
 
 # Adafruit IO
 ADAFRUIT_USERNAME = os.environ.get('ADAFRUIT_USERNAME', '_Sieg_')
-ADAFRUIT_KEY = os.environ.get('ADAFRUIT_KEY', 'aio_pdMq41CmXMNMoGNw1NodT87KRKXX')
+ADAFRUIT_KEY = os.environ.get('ADAFRUIT_KEY', 'aio_kMlu35QJUfFGGHKaB9qyJQJGqBfL')
 ADAFRUIT_HOST = "io.adafruit.com"
 ADAFRUIT_PORT = 1883
 
