@@ -353,10 +353,10 @@ def get_stats():
 
 # ==================== INICIALIZACIÓN ====================
 
+# Inicializar tablas cuando se carga el módulo (funciona con gunicorn)
+init_database()
+
 if __name__ == '__main__':
-    # Inicializar tablas al arrancar
-    init_database()
-    
     port = int(os.environ.get('PORT', 5000))
     # IMPORTANTE: HTTP (no HTTPS) para compatibilidad con Wokwi
     app.run(host='0.0.0.0', port=port, debug=False)
