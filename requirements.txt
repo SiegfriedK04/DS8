@@ -1,14 +1,11 @@
 # requirements.txt
-# Para Railway - Incluye Bridge MQTT + API Flask (opcional)
+# Para Railway - Solo Bridge MQTT → PostgreSQL
 
-# ==================== Bridge MQTT → PostgreSQL ====================
-paho-mqtt==1.6.1        # Cliente MQTT para Adafruit IO
-psycopg2-binary==2.9.10 # PostgreSQL (ya lo tenías)
+# Cliente MQTT para conectar a Adafruit IO
+paho-mqtt==1.6.1
 
-# ==================== API Flask (Opcional - si quieres mantener API REST) ====================
-Flask==3.0.0            # Ya lo tenías
-Flask-CORS==4.0.0       # Ya lo tenías
-gunicorn==21.2.0        # Ya lo tenías
+# PostgreSQL driver
+psycopg2-binary==2.9.10
 
-# ==================== Utilidades (Opcional) ====================
-python-dotenv==1.0.0    # Para cargar .env localmente
+# Opcional: para cargar .env en desarrollo local
+python-dotenv==1.0.0
